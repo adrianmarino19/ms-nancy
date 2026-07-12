@@ -3,6 +3,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import json
+import pathlib
+
+from prompts.system_prompt import SYSTEM_PROMPT
 
 load_dotenv()
 
@@ -12,7 +15,7 @@ client = OpenAI(
     api_key=API_KEY
 )
 
-# name = input("What is your name? ") 
+# system_prompt = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 def llm_call(
     text: list,
@@ -24,6 +27,7 @@ def llm_call(
     """    
     response = client.responses.create(
         model="gpt-5.4-nano-2026-03-17",
+        instructions=SYSTEM_PROMPT,
         input=text,
         previous_response_id=previous_response_id,
         tools=tools

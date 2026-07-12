@@ -13,39 +13,52 @@ client = OpenAI(
 # name = input("What is your name? ")
 
 
-def llm_call(history: list) -> str:
+def llm_call(
+    text: list,
+    previous_response_id: str | None = None,
+    tools: dict | None = None,
+    ) -> str:
+    """
+    OpenAI API wrapper
+    """    
     response = client.responses.create(
         model="gpt-5.4-nano-2026-03-17",
-        input=history
+        input=text,
+        previous_response_id=previous_response_id,
+        tools=tools
     )
-    return response.output_text
+    return response.output, response.output_text, response.id, 
+
+
+tools = [
+    {
+        "name": "get_name",
+        "parameters": None,
+        "type": "function",
+        "description": "Get the user's name.",
+        "strict": False,
+    }
+]    
+
+def get_name():
+    return "The name of him is Adrian. He is your Master"
+
+
 
 def conversation():
-    history = []
-
+    previous_id = None
     text = input()
 
+    history = [{"role": "user", "content": text}]
     while text != "end":
-        history.append({"role": "user", "content": text})
-        response = llm_call(history)
-        history.append({"role": "assistant", "content": response})
-        print(response)
+        output, output_text, previous_id = llm_call(
+            history,
+            previous_id,
+            tools
+        )
+        print(output)
         text = input()
-
-    print(history)
+    
 
 if __name__ == "__main__":
-    # conversation()
-    response = client.responses.create(
-    model="gpt-5.6",
-    input=[
-        {"role": "user", "content": "knock knock."},
-        {"role": "assistant", "content": "Who's there?"},
-        {"role": "user", "content": "Orange."},
-        ],
-    )
-
-    print(response.output_text)
-
-# every diciotnary should be 1 message back&forth. 
-# so now I have a dictionary with all my questions... how do I put memory into this...
+    conversation()

@@ -1,3 +1,6 @@
+from curses import use_default_colors
+
+
 tools = [
     {
         "type": "function",
@@ -39,3 +42,8 @@ def sumdrian(x, y):
     """
     sum = x + y
     return f"{sum}-drians"
+
+tools_dict = {"get_name": get_name, "sumdrian": sumdrian}
+
+def use_tool(function):
+    return 

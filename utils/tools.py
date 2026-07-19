@@ -1,6 +1,3 @@
-from curses import use_default_colors
-
-
 tools = [
     {
         "type": "function",

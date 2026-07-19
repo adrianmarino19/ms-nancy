@@ -5,7 +5,8 @@ import os
 import json
 import pathlib
 
-from prompts.system_prompt import SYSTEM_PROMPT
+from utils.prompts import SYSTEM_PROMPT
+from utils.config import MODEL_ID
 
 load_dotenv()
 
@@ -29,7 +30,7 @@ class Agent:
 
     def llm_call(self, text, tools = None):
         response = self.client.responses.create(
-            model="gpt-5.4-nano-2026-03-17",
+            model=MODEL_ID,
             instructions=self.system_prompt,
             input=text,
             tools=self.tools,

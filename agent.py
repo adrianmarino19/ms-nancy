@@ -5,7 +5,7 @@ import os
 import json
 import pathlib
 
-from prompts.system_prompt import SYSTEM_PROMPT
+from utils.prompts import SYSTEM_PROMPT
 
 load_dotenv()
 

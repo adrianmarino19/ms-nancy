@@ -38,7 +38,6 @@ class Agent:
         return response.output, response.output_text
     
     def chat(self):
-        history = self.history
         text = input()
         
         self.history.append({"role": "user", "content": text})
@@ -57,7 +56,30 @@ class Agent:
 
                 if function_name in self.tools_dict:
                     args = json.loads(arguments)
-                    tool_result = self.tools_dict[function_name](**args)
+
+                    try:
+                        tool_result = self.tools_dict[function_name](**args)
+                        
+                        self.history.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": output[0].call_id,
+                                "output": tool_result,
+                            }
+                        )
+                    except Exception as e:
+                        tool_result = f"Tool failed: {e}"
+
+                        self.history.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": output[0].call_id,
+                                "output": tool_result,
+                            }
+                        )
+                else:
+                    tool_result = f"Uknown tool: {function_name}"
+
                     self.history.append(
                         {
                             "type": "function_call_output",

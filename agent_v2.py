@@ -18,4 +18,4 @@ nancy = Agent(
 
 
 if __name__ == "__main__":
-    print(nancy.chat())
+    nancy.chat()

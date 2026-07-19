@@ -78,7 +78,7 @@ class Agent:
                             }
                         )
                 else:
-                    tool_result = f"Uknown tool: {function_name}"
+                    tool_result = f"Unknown tool: {function_name}"
 
                     self.history.append(
                         {

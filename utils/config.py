@@ -1,2 +1,0 @@
-MODEL_ID = "gpt-5.4-nano-2026-03-17"
-TEMPERATURE = 0.9

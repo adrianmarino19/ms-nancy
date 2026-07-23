@@ -1,0 +1,51 @@
+# ms-nancy
+
+Screenless, touchless nightstand voice assistant. Learning project — see `specs/` PRD.
+
+**Mission, purpose, and full roadmap: [`ROADMAP.md`](ROADMAP.md).**
+
+## How to work with me here
+
+This is a learn-to-build-agents project. The point is that **I** write the code and can
+defend every line (esp. the agent loop). Guide, don't code-dump. Give hints and let me try;
+only write code when I explicitly ask.
+
+## Lessons
+
+Teaching exercises go in `lessons/`. When you create a mini-exercise to help me learn a
+concept, put the file there. Keep them tiny: one concept, minimal scaffolding, a stub with
+TODOs I fill in myself.
+
+Core mental-model notes: `lessons/notes_llm_core.md`.
+
+## Progress
+
+**Built (hand-rolled, no frameworks — `agent.py`):**
+- Multi-turn chat loop with conversation memory (manual history list, re-sent each turn).
+- Tool-calling agent loop: declare tools → detect `function_call` → parse `arguments`
+  (`json.loads`) → run the Python → feed result back by `call_id` → model answers.
+- Two tools: `get_name`, `sumdrian`.
+- Tried all 3 state mechanisms: manual history / `previous_response_id` / Conversations API.
+
+**Concepts I can now defend (see `specs/` §5.2):**
+- API is stateless; "memory" = I re-send history. Three places state can live.
+- LLM only predicts tokens; dicts/roles/tools get serialized to a flat token stream and
+  parsed back (SDK translates at both edges).
+- Chat = special tokens (ChatML `<|im_start|>…<|im_end|>`); tool calls = a trained delimiter
+  format (`<tool_call>{name,args}</tool_call>`) the SDK parses into a `function_call` object.
+- A response is a *list of items* (message and/or function_call). The model only *requests*
+  a tool; my code runs it.
+- Tool `parameters` = a JSON Schema (fixed vocab: `type`/`properties`/`required`/
+  `additionalProperties`/`enum`/`items`). Two layers: OpenAI wrapper vs. the inner schema.
+- Meta-skills: named standard → look it up; `Dict[str, object]` + docstring → type gave up,
+  read the docstring; error `param`/`context=()` paths point at the exact location.
+
+**Known shortcut (not a bug I can't see):** `agent.py` carries state two ways and resets
+`history` each turn, so memory currently rides on `previous_response_id` (server-side), not
+the manual list. Left as-is on purpose. To fully own it: drop `previous_id`, stop resetting
+`history`, and append the `function_call` item alongside its output.
+
+**Not ReAct, precisely:** same reason→act→observe loop, but native function-calling, not
+ReAct's original Thought/Action/Observation text parsing.
+
+**Next:** voice (STT in / TTS out), then wake word. RAG over past conversations later.

@@ -20,27 +20,21 @@ straight through — no numpy.
 Run:  uv run main.py     (Ctrl-C to stop)
 Use headphones. On open speakers she hears herself and interrupts herself.
 
-Pi note: every microphone/speaker line lives in this file for now. When we port
-to the Pi, this audio code is all that changes — extract it to audio.py then.
+Pi note: all hardware lives in audio.py. That file is the whole port.
 """
 
 import base64
 import os
 import time
 
-import sounddevice as sd
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from audio import SAMPLE_RATE, Speaker, open_mic
 
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Realtime audio is PCM16 / 24kHz / mono. Don't change these without reason —
-# 24000 is the only rate the API's audio/pcm format accepts.
-SAMPLE_RATE = 24000
-CHANNELS = 1
-BLOCK = 2400
 
 MODEL = "gpt-realtime"
 
@@ -49,10 +43,19 @@ DEBUG = bool(os.getenv("DEBUG"))
 # M0 personality is deliberately almost nothing. One line. Fleshed out at M1.
 INSTRUCTIONS = "You are Ms. Nancy, a warm librarian. Keep replies short and spoken-friendly."
 
+# ponytail: instrumentation for the barge-in investigation. Delete once the
+# upstream-lag question is settled — it is a measurement, not a feature.
+_T0 = time.monotonic()
+
+
+def log(msg: str) -> None:
+    print(f"[{time.monotonic() - _T0:7.2f}s] {msg}")
+
 
 def main() -> None:
-    # Open the speaker once; we write her audio into it as deltas arrive.
-    speaker = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
+    # Open the speaker once; we hand her audio to it as deltas arrive. play()
+    # returns immediately, so this thread stays free to read the socket.
+    speaker = Speaker()
     speaker.start()
 
     with client.realtime.connect(model=MODEL) as conn:
@@ -64,10 +67,22 @@ def main() -> None:
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
-                        # Server VAD: the server watches audio volume and decides
-                        # when your turn ended. Swap to {"type": "semantic_vad"} if
-                        # she cuts you off mid-thought — it waits on meaning, not volume.
-                        "turn_detection": {"type": "server_vad"},
+                        # TURN DETECTION — the hardest judgement call in the loop:
+                        # is this silence a pause, or an ending?
+                        #
+                        # server_vad only measures silence, so a mid-thought pause
+                        # past silence_duration_ms reads as "done". That one mistake
+                        # chops your sentence into two turns, hands Whisper fragments
+                        # to transcribe, and makes her lunge into your thinking pause.
+                        #
+                        # semantic_vad runs a model over how you sound — intonation,
+                        # whether the clause finished, fillers — so trailing off on
+                        # "and..." waits, while a settled question fires fast.
+                        #
+                        # eagerness="low" because the two errors are not equally bad:
+                        # answering early cuts you off, answering late costs a beat
+                        # you barely notice. Bias toward waiting.
+                        "turn_detection": {"type": "semantic_vad", "eagerness": "low"},
                         # Transcribes YOUR speech too, so the printed conversation
                         # has both sides. Costs one extra model call per turn.
                         "transcription": {"model": "whisper-1"},
@@ -82,63 +97,72 @@ def main() -> None:
 
         # 2) START THE MIC. This callback runs on a separate audio thread and
         #    streams frames UP into the socket while the main thread reads DOWN.
-        def on_mic(indata, frames, time_info, status) -> None:
-            if status:
-                print(f"[mic] {status}")
-            conn.input_audio_buffer.append(audio=base64.b64encode(bytes(indata)).decode("ascii"))
+        def on_mic(pcm: bytes) -> None:
+            # THE MEASUREMENT. We are handed 20ms of audio every 20ms. If the
+            # send takes longer than 20ms, we cannot keep up in real time and the
+            # backlog grows without bound — the server's VAD is then judging audio
+            # from seconds ago, and your barge-in arrives that late.
+            t = time.monotonic()
+            conn.input_audio_buffer.append(audio=base64.b64encode(pcm).decode("ascii"))
+            took = (time.monotonic() - t) * 1000
+            if took > 20:
+                log(f"[lag] mic send blocked {took:.0f}ms")
 
-        mic = sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=BLOCK,
-            callback=on_mic,
-        )
-        mic.start()
+        mic = open_mic(on_mic)
 
         print("Ms. Nancy is listening. Say hi. (Ctrl-C to stop)")
 
         # BARGE-IN STATE. The server sends her audio faster than realtime, so the
-        # speaker queue runs "ahead" of what you've actually heard. To cut her off
-        # we need to know which item is playing and roughly how far in we are.
+        # speaker queue runs "ahead" of what you've actually heard. We track which
+        # item is playing; the speaker tracks how much of it the card really played.
         speaking: str | None = None  # item_id of the reply currently playing
-        started_at = 0.0  # wall clock when its first frame hit the speaker
+        cut: str | None = None  # item_id you barged in on — ignore its stragglers
 
         # 3) THE EVENT LOOP. Everything the server sends arrives here; route by type.
         try:
             for event in conn:
                 # Run with DEBUG=1 to see every event type the server sends.
                 if DEBUG and event.type != "response.output_audio.delta":
-                    print(f"  <- {event.type}")
+                    log(f"  <- {event.type}")
 
                 if event.type == "response.output_audio.delta":
+                    # Deltas already in flight when you barged in keep arriving for
+                    # a beat afterwards. Playing them is an audible burp of her voice
+                    # after she was supposed to have stopped. Drop them.
+                    if event.item_id == cut:
+                        continue
                     if speaking != event.item_id:
-                        speaking, started_at = event.item_id, time.monotonic()
-                    speaker.write(base64.b64decode(event.delta))
+                        speaking = event.item_id
+                        speaker.reset()  # new reply — start counting its playback
+                        log(f"audio starts ({event.item_id[-6:]})")
+                    speaker.play(base64.b64decode(event.delta))
 
                 elif event.type == "input_audio_buffer.speech_started":
+                    still_audible = speaker.is_playing()
+                    log(f"speech_started (she was {'talking' if still_audible else 'silent'})")
                     # You started talking over her. Two halves, and both matter:
-                    if speaking:
-                        # (a) LOCAL: abort() drops queued frames instantly.
-                        #     stop() would politely drain them — the exact bug.
-                        speaker.abort()
-                        speaker.start()
-                        # (b) REMOTE: tell her she only got this far, so her memory
+                    if speaking and still_audible:
+                        # (a) LOCAL: drop every queued frame instantly, and get
+                        #     back the ms the sound card actually played.
+                        heard_ms = speaker.flush()
+                        # (b) REMOTE: tell her she only got that far, so her memory
                         #     matches what you actually heard. Without this she'd
                         #     "remember" saying a paragraph you cut off after 2 words.
-                        # ponytail: wall-clock elapsed as a stand-in for true playback
-                        # position. Accurate while the queue never underruns, which
-                        # holds when audio arrives faster than realtime. If truncation
-                        # lands visibly wrong, track frames written vs. consumed instead.
                         conn.conversation.item.truncate(
                             item_id=speaking,
                             content_index=0,
-                            audio_end_ms=int((time.monotonic() - started_at) * 1000),
+                            audio_end_ms=heard_ms,
                         )
-                        speaking = None
+                        log(f"barge-in: cut after {heard_ms}ms heard")
+                        cut, speaking = speaking, None
 
                 elif event.type == "response.done":
-                    speaking = None
+                    # Deliberately does NOT clear `speaking`. Generation finishing
+                    # is not her mouth closing — the speaker still holds seconds of
+                    # her voice. Clearing here was the whole barge-in bug: every
+                    # interruption after this event found `speaking = None` and did
+                    # nothing. `speaker.is_playing()` is the real "is she talking".
+                    pass
                 elif event.type == "conversation.item.input_audio_transcription.completed":
                     print(f"You:   {event.transcript.strip()}")
                 elif event.type == "response.output_audio_transcript.done":

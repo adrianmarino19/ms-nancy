@@ -78,6 +78,16 @@ class Speaker:
         with self._lock:
             self._played = 0
 
+    def is_playing(self) -> bool:
+        """True while the sound card still has audio of hers left to play.
+
+        THIS is what "she is still talking" means — not the server's
+        `response.done`, which only says generation finished. Audio arrives
+        faster than realtime, so the server is done seconds before your ear is.
+        """
+        with self._lock:
+            return bool(self._buf)
+
     def flush(self) -> int:
         """Drop everything unplayed. Returns ms actually heard, then resets.
 
@@ -135,9 +145,14 @@ def demo() -> None:
     assert elapsed < 0.1, f"play() blocked for {elapsed:.2f}s — the whole bug is back"
 
     time.sleep(0.5)
+    # The barge-in bug in one assert: 9 seconds still queued, so she is audibly
+    # talking — even though the server called this response "done" long ago.
+    assert sp.is_playing(), "is_playing() must be true while audio is still queued"
+
     ms = sp.flush()
     assert 300 < ms < 900, f"expected ~500ms actually played, got {ms}ms"
     assert sp.flush() == 0, "flush() must reset the counter"
+    assert not sp.is_playing(), "flush() must leave nothing queued"
     sp.stop()
     print(f"ok — pushed 10s in {elapsed*1000:.1f}ms, reported {ms}ms played")
 

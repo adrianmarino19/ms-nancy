@@ -10,8 +10,8 @@ THE ONE MENTAL MODEL:
               own audio thread (the `on_mic` callback below).
       - DOWN: her audio frames stream OUT; the main thread reads server events
               in a loop and plays audio deltas as they arrive.
-    Server VAD decides when you've stopped talking — that's why there's no
-    push-to-talk button.
+    The server decides when you've stopped talking — that's why there's no
+    push-to-talk button. See `turn_detection` below for how it decides.
 
 Audio facts (OpenAI Realtime): PCM16, 24 kHz, mono. Raw int16 bytes,
 base64-encoded up, base64-decoded down. sounddevice's Raw streams pass bytes
@@ -43,13 +43,17 @@ DEBUG = bool(os.getenv("DEBUG"))
 # M0 personality is deliberately almost nothing. One line. Fleshed out at M1.
 INSTRUCTIONS = "You are Ms. Nancy, a warm librarian. Keep replies short and spoken-friendly."
 
-# ponytail: instrumentation for the barge-in investigation. Delete once the
-# upstream-lag question is settled — it is a measurement, not a feature.
 _T0 = time.monotonic()
 
 
 def log(msg: str) -> None:
+    """Timestamped trace. Chatty lines are DEBUG-only; warnings always print."""
     print(f"[{time.monotonic() - _T0:7.2f}s] {msg}")
+
+
+def trace(msg: str) -> None:
+    if DEBUG:
+        log(msg)
 
 
 def main() -> None:
@@ -122,8 +126,8 @@ def main() -> None:
         try:
             for event in conn:
                 # Run with DEBUG=1 to see every event type the server sends.
-                if DEBUG and event.type != "response.output_audio.delta":
-                    log(f"  <- {event.type}")
+                if event.type != "response.output_audio.delta":
+                    trace(f"  <- {event.type}")
 
                 if event.type == "response.output_audio.delta":
                     # Deltas already in flight when you barged in keep arriving for
@@ -134,12 +138,12 @@ def main() -> None:
                     if speaking != event.item_id:
                         speaking = event.item_id
                         speaker.reset()  # new reply — start counting its playback
-                        log(f"audio starts ({event.item_id[-6:]})")
+                        trace(f"audio starts ({event.item_id[-6:]})")
                     speaker.play(base64.b64decode(event.delta))
 
                 elif event.type == "input_audio_buffer.speech_started":
                     still_audible = speaker.is_playing()
-                    log(f"speech_started (she was {'talking' if still_audible else 'silent'})")
+                    trace(f"speech_started (she was {'talking' if still_audible else 'silent'})")
                     # You started talking over her. Two halves, and both matter:
                     if speaking and still_audible:
                         # (a) LOCAL: drop every queued frame instantly, and get
@@ -153,7 +157,7 @@ def main() -> None:
                             content_index=0,
                             audio_end_ms=heard_ms,
                         )
-                        log(f"barge-in: cut after {heard_ms}ms heard")
+                        trace(f"barge-in: cut after {heard_ms}ms heard")
                         cut, speaking = speaking, None
 
                 elif event.type == "response.done":

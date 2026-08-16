@@ -40,6 +40,18 @@ MODEL = "gpt-realtime"
 
 DEBUG = bool(os.getenv("DEBUG"))
 
+# ECHO PROBE. Unset for normal runs. Set to a negative dB to fake her voice
+# leaking into the mic at that level below what the speaker played — see
+# `open_mic` in audio.py. Wear headphones (so the only echo is the fake one) and
+# sweep until she stops interrupting herself:
+#
+#     ECHO_DB=-20 DEBUG=1 uv run main.py     # expect self-interruption
+#     ECHO_DB=-30 DEBUG=1 uv run main.py
+#     ECHO_DB=-40 DEBUG=1 uv run main.py     # expect clean
+#
+# The level where it goes clean is the suppression the real mic array must beat.
+ECHO_DB = float(os.environ["ECHO_DB"]) if os.getenv("ECHO_DB") else None
+
 # M0 personality is deliberately almost nothing. One line. Fleshed out at M1.
 INSTRUCTIONS = "You are Ms. Nancy, a warm librarian. Keep replies short and spoken-friendly."
 
@@ -79,13 +91,15 @@ def main() -> None:
                         # chops your sentence into two turns, hands Whisper fragments
                         # to transcribe, and makes her lunge into your thinking pause.
                         #
-                        # semantic_vad runs a model over how you sound — intonation,
-                        # whether the clause finished, fillers — so trailing off on
-                        # "and..." waits, while a settled question fires fast.
+                        # semantic_vad classifies the WORDS you have said so far to
+                        # judge whether you are finished — so trailing off on "and..."
+                        # or "ummm" waits, while a settled question fires fast.
+                        # (Lexical, per OpenAI's docs. Not prosody — do not claim it
+                        # listens to your intonation, that is unsupported.)
                         #
-                        # eagerness="low" because the two errors are not equally bad:
-                        # answering early cuts you off, answering late costs a beat
-                        # you barely notice. Bias toward waiting.
+                        # eagerness tunes the maximum wait timeout. "low" because the
+                        # two errors are not equally bad: answering early cuts you off,
+                        # answering late costs a beat you barely notice. Bias to wait.
                         "turn_detection": {"type": "semantic_vad", "eagerness": "low"},
                         # Transcribes YOUR speech too, so the printed conversation
                         # has both sides. Costs one extra model call per turn.
@@ -112,15 +126,20 @@ def main() -> None:
             if took > 20:
                 log(f"[lag] mic send blocked {took:.0f}ms")
 
-        mic = open_mic(on_mic)
+        mic = open_mic(on_mic, echo=(speaker, ECHO_DB) if ECHO_DB is not None else None)
 
         print("Ms. Nancy is listening. Say hi. (Ctrl-C to stop)")
+        if ECHO_DB is not None:
+            print(f"[probe] faking {ECHO_DB:g}dB of echo into the mic — headphones only")
 
         # BARGE-IN STATE. The server sends her audio faster than realtime, so the
         # speaker queue runs "ahead" of what you've actually heard. We track which
         # item is playing; the speaker tracks how much of it the card really played.
         speaking: str | None = None  # item_id of the reply currently playing
-        cut: str | None = None  # item_id you barged in on — ignore its stragglers
+        # Every item you barged in on. A set, not one slot: cuts can land within
+        # a couple hundred ms of each other, and a single slot lets the older
+        # item's stragglers through.
+        cut: set[str] = set()
 
         # 3) THE EVENT LOOP. Everything the server sends arrives here; route by type.
         try:
@@ -133,7 +152,7 @@ def main() -> None:
                     # Deltas already in flight when you barged in keep arriving for
                     # a beat afterwards. Playing them is an audible burp of her voice
                     # after she was supposed to have stopped. Drop them.
-                    if event.item_id == cut:
+                    if event.item_id in cut:
                         continue
                     if speaking != event.item_id:
                         speaking = event.item_id
@@ -158,7 +177,8 @@ def main() -> None:
                             audio_end_ms=heard_ms,
                         )
                         trace(f"barge-in: cut after {heard_ms}ms heard")
-                        cut, speaking = speaking, None
+                        cut.add(speaking)
+                        speaking = None
 
                 elif event.type == "response.done":
                     # Deliberately does NOT clear `speaking`. Generation finishing

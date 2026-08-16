@@ -47,6 +47,20 @@ def db(ratio: float) -> float:
     return 20 * np.log10(max(ratio, 1e-9))
 
 
+# Where ECHO_DB stopped breaking turn detection on headphones. See main.py.
+TARGET_DB = -40
+
+
+def suppression_needed(coupling: float) -> float:
+    """dB of echo cancellation required to drag `coupling` down to the target.
+
+    Both are negative-going, which is exactly how to get the sign backwards:
+    a setup leaking at -1dB needs 39dB of help, not none. Cancellation is only
+    unnecessary when the coupling is already BELOW the target.
+    """
+    return coupling - TARGET_DB
+
+
 def coupling_db(recorded: float, floor: float, played: float) -> float | None:
     """How far below the played signal the leaked signal landed.
 
@@ -82,12 +96,11 @@ def measure() -> None:
         return
 
     print(f"\n  COUPLING: {c:.1f} dB")
-    # -40dB is where ECHO_DB stopped breaking turn detection. See main.py.
-    need = -40 - c
+    need = suppression_needed(c)
     if need <= 0:
-        print("  Already below the -40dB target. This setup needs no echo cancellation.")
+        print(f"  Already under the {TARGET_DB}dB target. This setup needs no echo cancellation.")
     else:
-        print(f"  Needs {need:.0f} dB of echo cancellation to reach the -40dB target.")
+        print(f"  Needs {need:.0f} dB of echo cancellation to reach the {TARGET_DB}dB target.")
 
 
 def check() -> None:
@@ -100,6 +113,11 @@ def check() -> None:
     assert abs(coupling_db(np.sqrt(2) * 0.01, 0.01, 0.1) - -20) < 0.01
     # Buried in noise is not a measurement.
     assert coupling_db(0.010, 0.0099, 0.1) is None
+
+    # The sign trap: a setup that leaks at almost full volume needs nearly all
+    # 40dB of help. Reading this backwards says "buy nothing" on the worst case.
+    assert abs(suppression_needed(-1.3) - 38.7) < 1e-9
+    assert suppression_needed(-45) < 0, "already quieter than the target needs no AEC"
     print("ok")
 
 
